@@ -1,0 +1,37 @@
+notes*
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+.venv/
+
+# --- Rust ---
+rust/target/
+
+# --- Go ---
+go/bin/
+go/pkg/
+
+# --- C++ ---
+cpp/build/
+cpp/**/CMakeFiles/
+cpp/**/cmake_install.cmake
+cpp/**/CMakeCache.txt
+
+# --- Java ---
+java/out/
+*.class
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Misc ---
+.env

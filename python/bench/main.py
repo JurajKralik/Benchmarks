@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import platform
 import struct
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 
 def read_bin_int32_le(path: str) -> List[int]:
