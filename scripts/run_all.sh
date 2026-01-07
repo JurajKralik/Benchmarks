@@ -89,6 +89,32 @@ tail -n +2 "$DATASETS_CSV" | while IFS=, read -r dist n seed path; do
     --warmup "$WARMUP" \
     --reps "$REPS" \
     --out "$OUT"
+  # C# (.NET)
+  echo "[C#]"
+  (cd csharp && dotnet run -c Release -- \
+    --dataset "../$path" \
+    --algo builtin \
+    --warmup "$WARMUP" \
+    --reps "$REPS" \
+    --out "../$OUT")
+
+  # JavaScript (Node.js)
+  echo "[JavaScript]"
+  node js/bench_sort.mjs \
+    --dataset "$path" \
+    --algo builtin \
+    --warmup "$WARMUP" \
+    --reps "$REPS" \
+    --out "$OUT"
+
+  # TypeScript (precompiled)
+  echo "[TypeScript]"
+  node ts/dist/bench_sort.js \
+    --dataset "$path" \
+    --algo builtin \
+    --warmup "$WARMUP" \
+    --reps "$REPS" \
+    --out "$OUT"
 
 done
 

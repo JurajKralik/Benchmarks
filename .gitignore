@@ -25,6 +25,15 @@ cpp/**/CMakeCache.txt
 java/out/
 *.class
 
+# --- .NET / C# ---
+csharp/bin/
+csharp/obj/
+
+# --- Node ---
+node_modules/
+dist/
+package-lock.json
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
