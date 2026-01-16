@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 from collections import defaultdict
 from pathlib import Path
+from statistics import median, mean
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -18,7 +20,6 @@ def read_summary(path: Path) -> List[dict]:
 			raise SystemExit(f"{path} missing required columns: {sorted(required)}")
 		rows = []
 		for row in r:
-			# normalize types
 			row["n"] = int(row["n"])
 			row["runs"] = int(row["runs"])
 			row["median_ms"] = float(row["median_ms"])
@@ -30,13 +31,21 @@ def read_summary(path: Path) -> List[dict]:
 
 
 def safe_div(a: float, b: float) -> float:
-	if b == 0.0:
+	return float("nan") if b == 0.0 else a / b
+
+
+def geom_mean(vals: List[float]) -> float:
+	"""
+	Geometric mean for positive values.
+	We ignore non-positive and NaN values (shouldn't happen for runtimes).
+	"""
+	clean = [v for v in vals if v > 0.0 and math.isfinite(v)]
+	if not clean:
 		return float("nan")
-	return a / b
+	return math.exp(sum(math.log(v) for v in clean) / len(clean))
 
 
-def plot_runtime(rows: List[dict], outdir: Path, algo: str) -> None:
-	# dist -> lang -> list[(n, median)]
+def plot_runtime_by_distribution(rows: List[dict], outdir: Path, algo: str) -> None:
 	by_dist: Dict[str, Dict[str, List[Tuple[int, float]]]] = defaultdict(lambda: defaultdict(list))
 	for r in rows:
 		if r["algo"] != algo:
@@ -65,8 +74,7 @@ def plot_runtime(rows: List[dict], outdir: Path, algo: str) -> None:
 		plt.close()
 
 
-def plot_speedup(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) -> None:
-	# dist -> n -> lang -> median
+def plot_speedup_by_distribution(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) -> None:
 	by_dist: Dict[str, Dict[int, Dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
 	for r in rows:
 		if r["algo"] != algo:
@@ -74,7 +82,6 @@ def plot_speedup(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) 
 		by_dist[r["distribution"]][r["n"]][r["language"]] = r["median_ms"]
 
 	for dist, by_n in sorted(by_dist.items()):
-		# For each lang, collect speedup points where baseline exists
 		lang_pts: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
 
 		for n, medians in sorted(by_n.items()):
@@ -82,11 +89,9 @@ def plot_speedup(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) 
 				continue
 			base = medians[baseline_lang]
 			for lang, m in medians.items():
-				# speedup > 1 means faster than baseline
-				sp = safe_div(base, m)
+				sp = safe_div(base, m)  # >1 means faster than baseline
 				lang_pts[lang].append((n, sp))
 
-		# If baseline missing everywhere, skip
 		if not lang_pts:
 			continue
 
@@ -111,8 +116,7 @@ def plot_speedup(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) 
 		plt.close()
 
 
-def plot_variability(rows: List[dict], outdir: Path, algo: str) -> None:
-	# dist -> lang -> list[(n, iqr/median)]
+def plot_variability_by_distribution(rows: List[dict], outdir: Path, algo: str) -> None:
 	by_dist: Dict[str, Dict[str, List[Tuple[int, float]]]] = defaultdict(lambda: defaultdict(list))
 	for r in rows:
 		if r["algo"] != algo:
@@ -141,12 +145,105 @@ def plot_variability(rows: List[dict], outdir: Path, algo: str) -> None:
 		plt.close()
 
 
+def plot_runtime_agg_geom(rows: List[dict], outdir: Path, algo: str) -> None:
+	"""
+	Aggregate across distributions using geometric mean of medians.
+	One curve per language.
+	"""
+	# lang -> n -> list[median_ms across dists]
+	acc: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+
+	for r in rows:
+		if r["algo"] != algo:
+			continue
+		acc[r["language"]][r["n"]].append(r["median_ms"])
+
+	plt.figure()
+	for lang, by_n in sorted(acc.items()):
+		pts = []
+		for n, vals in by_n.items():
+			gm = geom_mean(vals)
+			if math.isfinite(gm):
+				pts.append((n, gm))
+		if not pts:
+			continue
+		pts.sort(key=lambda x: x[0])
+		x = [p[0] for p in pts]
+		y = [p[1] for p in pts]
+		plt.plot(x, y, marker="o", label=lang)
+
+	plt.xscale("log")
+	plt.yscale("log")
+	plt.xlabel("n (log scale)")
+	plt.ylabel("geom. mean median runtime across dists (ms, log scale)")
+	plt.title(f"Aggregate runtime vs n (geometric mean over distributions) — algo={algo}")
+	plt.legend()
+	plt.grid(True, which="both", linestyle="--", linewidth=0.5)
+
+	out = outdir / f"runtime_agg_geom_{algo}.png"
+	plt.tight_layout()
+	plt.savefig(out, dpi=160)
+	plt.close()
+
+
+def plot_speedup_agg_geom(rows: List[dict], outdir: Path, algo: str, baseline_lang: str) -> None:
+	"""
+	Aggregate speedup using geometric mean across distributions:
+	1) compute geom mean runtime per (lang, n) over distributions
+	2) speedup(lang,n) = gm(baseline,n) / gm(lang,n)
+	"""
+	acc: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+	for r in rows:
+		if r["algo"] != algo:
+			continue
+		acc[r["language"]][r["n"]].append(r["median_ms"])
+
+	if baseline_lang not in acc:
+		print(f"[warn] baseline language '{baseline_lang}' not found in summary; skipping aggregate speedup plot")
+		return
+
+	# gm per (lang,n)
+	gm_rt: Dict[str, Dict[int, float]] = defaultdict(dict)
+	for lang, by_n in acc.items():
+		for n, vals in by_n.items():
+			gm_rt[lang][n] = geom_mean(vals)
+
+	plt.figure()
+	for lang, by_n in sorted(gm_rt.items()):
+		pts = []
+		for n, gm in by_n.items():
+			base = gm_rt[baseline_lang].get(n)
+			if base is None or not math.isfinite(base) or not math.isfinite(gm) or gm == 0.0:
+				continue
+			pts.append((n, base / gm))
+		if not pts:
+			continue
+		pts.sort(key=lambda x: x[0])
+		x = [p[0] for p in pts]
+		y = [p[1] for p in pts]
+		plt.plot(x, y, marker="o", label=lang)
+
+	plt.xscale("log")
+	plt.xlabel("n (log scale)")
+	plt.ylabel(f"geom-mean speedup vs {baseline_lang} (baseline_gm / lang_gm)")
+	plt.title(f"Aggregate speedup vs {baseline_lang} (geometric mean over distributions) — algo={algo}")
+	plt.axhline(1.0, linewidth=1.0)
+	plt.legend()
+	plt.grid(True, which="both", linestyle="--", linewidth=0.5)
+
+	out = outdir / f"speedup_agg_geom_vs_{baseline_lang}_{algo}.png"
+	plt.tight_layout()
+	plt.savefig(out, dpi=160)
+	plt.close()
+
+
 def main() -> None:
 	ap = argparse.ArgumentParser()
 	ap.add_argument("--summary", default="results/summary.csv", help="Path to summary.csv")
 	ap.add_argument("--outdir", default="results/plots", help="Output directory for plots")
 	ap.add_argument("--algo", default="builtin", help="Algorithm name to plot (e.g., builtin)")
 	ap.add_argument("--baseline", default="cpp", help="Baseline language for speedup plots (e.g., cpp, rust)")
+	ap.add_argument("--skip-per-dist", action="store_true", help="Only generate aggregate plots")
 	args = ap.parse_args()
 
 	summary_path = Path(args.summary)
@@ -158,9 +255,15 @@ def main() -> None:
 
 	rows = read_summary(summary_path)
 
-	plot_runtime(rows, outdir, args.algo)
-	plot_speedup(rows, outdir, args.algo, args.baseline)
-	plot_variability(rows, outdir, args.algo)
+	# Per-distribution plots (small multiples)
+	if not args.skip_per_dist:
+		plot_runtime_by_distribution(rows, outdir, args.algo)
+		plot_speedup_by_distribution(rows, outdir, args.algo, args.baseline)
+		plot_variability_by_distribution(rows, outdir, args.algo)
+
+	# Aggregate plots (single summary)
+	plot_runtime_agg_geom(rows, outdir, args.algo)
+	plot_speedup_agg_geom(rows, outdir, args.algo, args.baseline)
 
 	print(f"Wrote plots to {outdir}")
 
